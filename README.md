@@ -72,6 +72,21 @@ Photos are downscaled to 1400px and re-encoded as JPEG at quality 0.72 before
 storage, roughly 150–350 KB each. Typical mobile quota runs to a few hundred MB,
 so several thousand photos is realistic. The Mark file screen shows current usage.
 
+## Backfilling old photos
+
+Log a find → **From old photos**. Pick photos you already took; the app reads
+GPS and capture date out of each one, matches anything within 40 m against a
+mark in your file, groups multiple shots of the same disk into a single entry,
+and hands you a review list before saving.
+
+Caveats worth knowing:
+
+- Location must have been on when the photo was taken.
+- Choose photos from your library. Sending them through a messaging app first
+  usually strips the GPS tags.
+- HEIC can't be decoded outside Safari. Do the import in Safari, or export the
+  photos as JPEG.
+
 ## Loading a mark file
 
 NGS Data Explorer (geodesy.noaa.gov/NGSDataExplorer) → draw a box around your
@@ -86,6 +101,7 @@ don't agree on header names. Coordinates parse as decimal degrees or as
 src/App.jsx    all four screens
 src/db.js      IndexedDB layer
 src/geo.js     distance, bearing, coordinate and CSV parsing, image compression
+src/exif.js    EXIF extraction and nearest-mark matching
 src/index.css  the whole stylesheet
 CLAUDE.md      architecture notes, read automatically by Claude Code
 wrangler.jsonc Cloudflare asset directory + SPA fallback

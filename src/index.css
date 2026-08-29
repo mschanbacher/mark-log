@@ -153,3 +153,17 @@ section{display:flex;flex-direction:column;gap:14px}
 .nav-b.on{color:var(--ink);border-top-color:var(--contour)}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ── photo backfill ──────────────────────────────────────── */
+.modes{display:flex;gap:6px}
+.modes .cchip{flex:1}
+.card.imp{cursor:default;border-left-color:var(--water);display:flex;
+  flex-direction:column;gap:10px}
+.imp-strip{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.imp-strip img{height:92px;width:92px;object-fit:cover;border:1px solid var(--rule);
+  flex:0 0 auto;display:block}
+.matched{font-size:12px;font-family:var(--mono);color:var(--paper);
+  background:var(--revision);padding:5px 8px}
+.matched b{letter-spacing:.05em}
+.unmatched{font-size:12px;line-height:1.45;color:var(--rule-dk);
+  border-left:3px solid var(--brass);padding-left:9px}

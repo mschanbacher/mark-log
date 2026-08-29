@@ -19,6 +19,12 @@ GitHub `main` (`mschanbacher/mark-log`).
 - **Build must run before deploy.** Uploading `src/` serves raw JSX and the page
   renders blank. `wrangler.jsonc` pins `assets.directory` to `./dist` so Wrangler
   doesn't guess.
+- **EXIF is read from the original `File`, never after compression.**
+  `compressToBlob` re-encodes through a canvas and drops every tag, so
+  `readExif(file)` must run first. This ordering is load-bearing — see
+  `addPhotos` in `SingleLog` and the loop in `PhotoImport`.
+- **Dates use `localDate`, not `toISOString`.** An evening photo west of
+  UTC otherwise records as the next day.
 - **Exports matter.** Storage is device-local and `navigator.storage.persist()`
   is a request, not a guarantee. CSV and GPX export from My finds are the backup.
 
@@ -28,6 +34,7 @@ GitHub `main` (`mschanbacher/mark-log`).
 src/App.jsx    all four screens (Nearby, Log, Finds, Mark file)
 src/db.js      IndexedDB layer — finds, photos, marks, meta
 src/geo.js     distance/bearing, coordinate + CSV parsing, image compression
+src/exif.js    EXIF extraction, nearest-mark matching
 src/index.css  entire stylesheet
 ```
 
@@ -40,7 +47,7 @@ user has recovered.
 ```bash
 npm run dev     # localhost is a secure origin, so geolocation works
 npm run build   # must produce dist/ before deploy
-npm test        # spatial index correctness check
+npm test        # spatial index + EXIF matching checks
 ```
 
 ## Deploy settings (Cloudflare dashboard)

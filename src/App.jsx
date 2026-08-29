@@ -4,6 +4,7 @@ import {
   distanceM, bearingDeg, compass, fmtDist, rad,
   parseCoord, parseDelimited, guessColumn, uid, compressToBlob,
 } from "./geo.js";
+import { readExif, localDate, suggestMark, explainNoGps } from "./exif.js";
 
 /* ── condition vocabulary (NGS recovery codes) ───────────── */
 const CONDITIONS = [
@@ -374,8 +375,241 @@ function NearbyView({ pos, setPos, locate, locState, locMsg, nearby, radiusMi,
   );
 }
 
-/* ═══ LOG ══════════════════════════════════════════════════ */
-function LogView({ draft, setDraft, pos, refresh, flash, done }) {
+/* ═══ LOG — single entry, or a bulk backfill from old photos ══ */
+function LogView(props) {
+  const seeded = !!(props.draft && Object.keys(props.draft).length);
+  const [mode, setMode] = useState("single");
+  const active = seeded ? "single" : mode;
+  return (
+    <section>
+      {!seeded && (
+        <div className="modes">
+          <button className={active === "single" ? "cchip on" : "cchip"}
+            onClick={() => setMode("single")}>One find</button>
+          <button className={active === "bulk" ? "cchip on" : "cchip"}
+            onClick={() => setMode("bulk")}>From old photos</button>
+        </div>
+      )}
+      {active === "single"
+        ? <SingleLog {...props} />
+        : <PhotoImport pos={props.pos} refresh={props.refresh}
+            flash={props.flash} done={props.done} />}
+    </section>
+  );
+}
+
+/* ═══ PHOTO BACKFILL ═══════════════════════════════════════
+   Reads GPS and capture date out of photos you already took,
+   matches each against the mark file, and turns a batch into
+   entries in one pass.
+   ─────────────────────────────────────────────────────────── */
+function PhotoImport({ pos, refresh, flash, done }) {
+  const [rows, setRows] = useState([]);
+  const [warnings, setWarnings] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState("");
+  const urls = useRef([]);
+  const fileRef = useRef(null);
+
+  useEffect(() => () => { urls.current.forEach(URL.revokeObjectURL); }, []);
+
+  const pick = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setBusy(true);
+    setWarnings([]);
+    const warn = new Set();
+    const drafts = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      setProg(`${i + 1} of ${files.length}`);
+      const ex = await readExif(f);          // original file, tags intact
+      let blob;
+      try {
+        blob = await compressToBlob(f);       // canvas re-encode, tags gone
+      } catch (err) {
+        warn.add(explainNoGps(f));
+        continue;
+      }
+      const url = URL.createObjectURL(blob);
+      urls.current.push(url);
+
+      let sugg = null;
+      if (ex.hasGps) {
+        const dLat = 150 / 111320;
+        const dLon = 150 / (111320 * Math.max(0.1, Math.cos(rad(ex.lat))));
+        try {
+          const { rows: near } = await db.marksInBox(
+            ex.lat - dLat, ex.lat + dLat, ex.lon - dLon, ex.lon + dLon);
+          sugg = suggestMark(ex.lat, ex.lon, near);
+        } catch (err) { /* no mark file loaded is fine */ }
+      } else {
+        warn.add(explainNoGps(f));
+      }
+      drafts.push({ photo: { id: uid(), blob, url }, ex, sugg, name: f.name });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    /* Several photos of the same disk collapse into one entry. */
+    const groups = new Map();
+    for (const d of drafts) {
+      const key = d.sugg?.mark?.pid ? `pid:${d.sugg.mark.pid}` : `solo:${d.photo.id}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
+    }
+
+    const out = [];
+    for (const [key, items] of groups) {
+      const withGps = items.find((i) => i.ex.hasGps);
+      const dated = items.map((i) => i.ex.date).filter(Boolean).sort((a, b) => a - b)[0];
+      const m = items[0].sugg;
+      out.push({
+        key,
+        photos: items.map((i) => i.photo),
+        lat: withGps ? withGps.ex.lat.toFixed(6) : "",
+        lon: withGps ? withGps.ex.lon.toFixed(6) : "",
+        date: dated ? localDate(dated) : "",
+        pid: m?.mark?.pid || "",
+        desig: m?.mark?.desig || "",
+        kind: m?.mark?.kind || "V",
+        condition: "GOOD",
+        notes: "",
+        matchDist: m ? m.dist : null,
+        fileNames: items.map((i) => i.name),
+      });
+    }
+
+    setRows((prev) => [...prev, ...out]);
+    setWarnings([...warn]);
+    setBusy(false);
+    setProg("");
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const edit = (key, patch) =>
+    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const drop = (key) => setRows((rs) => rs.filter((r) => r.key !== key));
+
+  const ready = rows.filter(
+    (r) => isFinite(parseCoord(r.lat)) && isFinite(parseCoord(r.lon)) && (r.pid || r.desig));
+  const blocked = rows.length - ready.length;
+
+  const saveAll = async () => {
+    if (!ready.length) { flash("Nothing ready to save — each entry needs coordinates and a name."); return; }
+    setBusy(true);
+    let n = 0;
+    try {
+      for (const r of ready) {
+        const id = uid();
+        for (const p of r.photos) await db.putPhoto({ id: p.id, findId: id, blob: p.blob });
+        await db.putFind({
+          id, pid: r.pid.trim().toUpperCase(), desig: r.desig.trim(), stamping: "",
+          kind: r.kind, lat: parseCoord(r.lat), lon: parseCoord(r.lon), elev: "",
+          condition: r.condition, notes: r.notes.trim(),
+          date: r.date || localDate(new Date()),
+          photoCount: r.photos.length,
+          loggedAt: new Date().toISOString(),
+        });
+        n++;
+      }
+      await refresh();
+      flash(`${n} ${n === 1 ? "entry" : "entries"} added.`);
+      setRows([]);
+      done();
+    } catch (e) {
+      flash(`Saved ${n} before running out of room. Delete some photos and retry the rest.`);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <h2 className="sec">Backfill from photos</h2>
+      <p className="note">
+        Pick photos you already took of marks. Coordinates and capture date come out
+        of the photo itself, and anything within 40 m of a mark in your file gets
+        matched automatically. Choose them from your photo library — sending photos
+        through a messaging app strips the location first.
+      </p>
+
+      <label className="btn as-label primary">
+        {busy ? `Reading ${prog}…` : "Choose photos"}
+        <input ref={fileRef} type="file" accept="image/*" multiple hidden
+          onChange={pick} disabled={busy} />
+      </label>
+
+      {warnings.map((w, i) => <p className="note" key={i}>{w}</p>)}
+
+      {rows.length > 0 && (
+        <>
+          <h2 className="sec">Review<span className="sec-n">{rows.length}</span></h2>
+          {rows.map((r) => (
+            <div className="card imp" key={r.key}>
+              <div className="imp-strip">
+                {r.photos.map((p) => <img key={p.id} src={p.url} alt="" />)}
+              </div>
+
+              {r.matchDist != null ? (
+                <div className="matched">
+                  Matched <b>{r.desig || r.pid}</b> · {fmtDist(r.matchDist, false)} away
+                </div>
+              ) : (
+                <div className="unmatched">
+                  {r.lat ? "No mark on file near this spot — name it yourself."
+                         : "No location in this photo. Enter coordinates or skip it."}
+                </div>
+              )}
+
+              <div className="row2">
+                <Field label="PID">
+                  <input className="in mono" value={r.pid}
+                    onChange={(e) => edit(r.key, { pid: e.target.value.toUpperCase() })} /></Field>
+                <Field label="Date">
+                  <input className="in mono" type="date" value={r.date}
+                    onChange={(e) => edit(r.key, { date: e.target.value })} /></Field>
+              </div>
+              <Field label="Designation">
+                <input className="in" value={r.desig}
+                  onChange={(e) => edit(r.key, { desig: e.target.value })} /></Field>
+              <div className="row2">
+                <Field label="Latitude">
+                  <input className="in mono" value={r.lat}
+                    onChange={(e) => edit(r.key, { lat: e.target.value })} /></Field>
+                <Field label="Longitude">
+                  <input className="in mono" value={r.lon}
+                    onChange={(e) => edit(r.key, { lon: e.target.value })} /></Field>
+              </div>
+              <div className="cond">
+                {CONDITIONS.map((c) => (
+                  <button key={c.code} className={r.condition === c.code ? "cchip on" : "cchip"}
+                    style={r.condition === c.code ? { background: c.color, borderColor: c.color } : {}}
+                    onClick={() => edit(r.key, { condition: c.code })}>{c.label}</button>
+                ))}
+              </div>
+              <Field label="Notes">
+                <textarea className="in ta" rows={2} value={r.notes}
+                  onChange={(e) => edit(r.key, { notes: e.target.value })} /></Field>
+              <button className="btn sm danger" onClick={() => drop(r.key)}>Skip this one</button>
+            </div>
+          ))}
+
+          {blocked > 0 && (
+            <p className="note">
+              {blocked} {blocked === 1 ? "entry is" : "entries are"} missing coordinates or a name
+              and won't be saved.
+            </p>
+          )}
+          <button className="btn primary big" onClick={saveAll} disabled={busy || !ready.length}>
+            {busy ? "Saving…" : `Save ${ready.length} ${ready.length === 1 ? "entry" : "entries"}`}
+          </button>
+        </>
+      )}
+    </>
+  );
+}
+
+function SingleLog({ draft, setDraft, pos, refresh, flash, done }) {
   const editing = !!draft?.id;
   const [pid, setPid] = useState(draft?.pid || "");
   const [desig, setDesig] = useState(draft?.desig || "");
@@ -420,19 +654,34 @@ function LogView({ draft, setDraft, pos, refresh, flash, done }) {
     if (!files.length) return;
     setBusy(true);
     const next = [...photos];
+    let filled = null;
     for (const f of files.slice(0, 6 - photos.length)) {
+      // EXIF comes off the original file — compressToBlob re-encodes
+      // through a canvas and drops every tag.
+      const ex = await readExif(f);
       try {
         const blob = await compressToBlob(f);
         const url = URL.createObjectURL(blob);
         urls.current.push(url);
         next.push({ id: uid(), blob, url, isNew: true });
       } catch (err) {
-        flash("That image couldn't be read. Try a JPEG or PNG.");
+        flash(explainNoGps(f));
+        continue;
+      }
+      if (ex.hasGps && !lat && !lon) {
+        setLat(ex.lat.toFixed(6));
+        setLon(ex.lon.toFixed(6));
+        filled = "coordinates";
+      }
+      if (ex.date && !draft?.date) {
+        const d = localDate(ex.date);
+        if (d) { setDate(d); filled = filled ? "coordinates and date" : "date"; }
       }
     }
     setPhotos(next);
     setBusy(false);
     if (fileRef.current) fileRef.current.value = "";
+    if (filled) flash(`Filled ${filled} from the photo.`);
   };
 
   const dropPhoto = async (p) => {
@@ -466,7 +715,7 @@ function LogView({ draft, setDraft, pos, refresh, flash, done }) {
   };
 
   return (
-    <section>
+    <>
       <h2 className="sec">{editing ? "Edit entry" : "Log a find"}</h2>
       <div className="row2">
         <Field label="PID">
@@ -533,7 +782,7 @@ function LogView({ draft, setDraft, pos, refresh, flash, done }) {
       <button className="btn primary big" onClick={save} disabled={busy}>
         {busy ? "Saving…" : editing ? "Save changes" : "Log this find"}
       </button>
-    </section>
+    </>
   );
 }
 
