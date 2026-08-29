@@ -5,6 +5,7 @@ import {
   parseCoord, parseDelimited, guessColumn, uid, compressToBlob,
 } from "./geo.js";
 import { readExif, localDate, suggestMark, explainNoGps } from "./exif.js";
+import MapView from "./MapView.jsx";
 
 /* ── condition vocabulary (NGS recovery codes) ───────────── */
 const CONDITIONS = [
@@ -121,6 +122,7 @@ export default function App() {
   }, []);
 
   const refreshFinds = useCallback(async () => setFinds(await db.getFinds()), []);
+  const refreshMarks = useCallback(async () => setMarkMeta(await db.getMarkMeta()), []);
 
   /* location */
   const locate = useCallback(() => {
@@ -218,7 +220,7 @@ export default function App() {
         </button>
       </header>
 
-      <main className="body">
+      <main className={view === "map" ? "body flush" : "body"}>
         {view === "nearby" && (
           <NearbyView pos={pos} setPos={setPos} locate={locate} locState={locState}
             locMsg={locMsg} nearby={nearby} radiusMi={radiusMi} setRadiusMi={setRadiusMi}
@@ -232,6 +234,10 @@ export default function App() {
         {view === "finds" && (
           <FindsView finds={finds} refresh={refreshFinds} onEdit={(f) => startLog(f)} flash={flash} />
         )}
+        {view === "map" && (
+          <MapView finds={finds} pos={pos} metric={metric} flash={flash}
+            onLog={startLog} onMarksChanged={refreshMarks} />
+        )}
         {view === "data" && (
           <DataView markMeta={markMeta} setMarkMeta={setMarkMeta} finds={finds} flash={flash} />
         )}
@@ -240,7 +246,8 @@ export default function App() {
       {toast && <div className="toast">{toast}</div>}
 
       <nav className="nav">
-        {[["nearby", "Nearby"], ["log", "Log a find"], ["finds", "My finds"], ["data", "Mark file"]]
+        {[["nearby", "Nearby"], ["log", "Log"], ["finds", "Finds"],
+          ["map", "Map"], ["data", "File"]]
           .map(([k, l]) => (
             <button key={k} className={view === k ? "nav-b on" : "nav-b"}
               onClick={() => { if (k === "log" && view !== "log") setDraft(null); setView(k); }}>

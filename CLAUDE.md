@@ -25,6 +25,13 @@ GitHub `main` (`mschanbacher/mark-log`).
   `addPhotos` in `SingleLog` and the loop in `PhotoImport`.
 - **Dates use `localDate`, not `toISOString`.** An evening photo west of
   UTC otherwise records as the next day.
+- **Marks come from the NGS public feature service** (`src/ngs.js`), an ArcGIS
+  layer NOAA refreshes weekly, no key. Paged at 2000 features via `resultOffset`.
+  Manual CSV import stays as the offline fallback — don't remove it.
+- **Basemap is USGS The National Map**, public domain, no key. Tiles are
+  runtime-cached CacheFirst in `vite.config.js`, which is what makes the map
+  work in the field after you've viewed an area once. NGS queries are
+  NetworkOnly — a cached page would silently truncate an import.
 - **Exports matter.** Storage is device-local and `navigator.storage.persist()`
   is a request, not a guarantee. CSV and GPX export from My finds are the backup.
 
@@ -35,6 +42,8 @@ src/App.jsx    all four screens (Nearby, Log, Finds, Mark file)
 src/db.js      IndexedDB layer — finds, photos, marks, meta
 src/geo.js     distance/bearing, coordinate + CSV parsing, image compression
 src/exif.js    EXIF extraction, nearest-mark matching
+src/ngs.js     NGS feature service client (bbox download, paging)
+src/MapView.jsx Leaflet map — finds, reference marks, live download
 src/index.css  entire stylesheet
 ```
 
@@ -47,7 +56,7 @@ user has recovered.
 ```bash
 npm run dev     # localhost is a secure origin, so geolocation works
 npm run build   # must produce dist/ before deploy
-npm test        # spatial index + EXIF matching checks
+npm test        # spatial index, EXIF matching, NGS client
 ```
 
 ## Deploy settings (Cloudflare dashboard)

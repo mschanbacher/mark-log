@@ -102,6 +102,8 @@ src/App.jsx    all four screens
 src/db.js      IndexedDB layer
 src/geo.js     distance, bearing, coordinate and CSV parsing, image compression
 src/exif.js    EXIF extraction and nearest-mark matching
+src/ngs.js     NGS feature service client
+src/MapView.jsx Leaflet map view
 src/index.css  the whole stylesheet
 CLAUDE.md      architecture notes, read automatically by Claude Code
 wrangler.jsonc Cloudflare asset directory + SPA fallback
