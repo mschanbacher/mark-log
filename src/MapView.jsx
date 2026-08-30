@@ -7,18 +7,32 @@ import { distanceM, fmtDist } from "./geo.js";
 
 /* USGS The National Map. Public domain, no key, and it looks like
    the quad sheets the rest of the app is dressed as. */
+/* USGS The National Map. Public domain, no key. Only three services
+   exist and just one carries contours, so "minimal topo" means
+   quieting USGSTopo rather than finding a plainer source: drop the
+   colour, ease the contrast, and let it sit back so the marks read
+   as the foreground. The filters live in index.css. */
 const BASEMAPS = {
-  topo: {
-    label: "Topo",
+  quiet: {
+    label: "Quiet",
     url: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",
     max: 16,
+    note: "contours, muted",
+  },
+  relief: {
+    label: "Relief",
+    url: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSShadedReliefOnly/MapServer/tile/{z}/{y}/{x}",
+    max: 16,
+    note: "landform only, no labels",
   },
   imagery: {
     label: "Imagery",
     url: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}",
     max: 16,
+    note: "aerial with contours",
   },
 };
+
 const ATTRIB = "USGS The National Map";
 
 const MARK_LIMIT = 800;   // circles we're willing to draw at once
@@ -33,7 +47,7 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
   const meLayer = useRef(null);
   const abort = useRef(null);
 
-  const [base, setBase] = useState("topo");
+  const [base, setBase] = useState("quiet");
   const [sel, setSel] = useState(null);
   const [shown, setShown] = useState(0);
   const [tooMany, setTooMany] = useState(false);
@@ -71,9 +85,9 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
       L.circleMarker([r.lat, r.lon], {
         radius: 5,
         color: "#8A5A2B",
-        weight: 1.8,
+        weight: 2,
         fillColor: "#FBFAF7",
-        fillOpacity: 0.85,
+        fillOpacity: 0.95,
       })
         .on("click", () => setSel({ ...r, found: false }))
         .addTo(markLayer.current);
@@ -90,10 +104,11 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
         : [39.5, -98.35];
     const zoom = pos || finds.length ? 14 : 4;
 
-    const m = L.map(holder.current, { zoomControl: true, attributionControl: true })
+    const m = L.map(holder.current, { zoomControl: false, attributionControl: true })
       .setView(start, zoom);
-    tiles.current = L.tileLayer(BASEMAPS.topo.url, {
-      maxZoom: BASEMAPS.topo.max,
+    L.control.scale({ imperial: true, metric: true, position: "bottomleft" }).addTo(m);
+    tiles.current = L.tileLayer(BASEMAPS.quiet.url, {
+      maxZoom: BASEMAPS.quiet.max,
       attribution: ATTRIB,
       crossOrigin: true,
     }).addTo(m);
@@ -216,7 +231,7 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
 
   return (
     <div className="mapwrap">
-      <div ref={holder} className="mapcanvas" />
+      <div ref={holder} className={`mapcanvas base-${base}`} />
 
       <div className="maptools">
         <div className="radius">
@@ -236,6 +251,8 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
         {dl && dl.state !== "working" && (
           <p className={dl.state === "error" ? "note" : "note small"}>{dl.msg}</p>
         )}
+
+        <p className="maphint">{BASEMAPS[base].note}</p>
 
         {zoomedOut ? (
           <p className="maphint">Zoom in to see marks on file.</p>

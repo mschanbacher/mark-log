@@ -28,6 +28,11 @@ GitHub `main` (`mschanbacher/mark-log`).
 - **Marks come from the NGS public feature service** (`src/ngs.js`), an ArcGIS
   layer NOAA refreshes weekly, no key. Paged at 2000 features via `resultOffset`.
   Manual CSV import stays as the offline fallback — don't remove it.
+- **Basemap treatments are CSS filters on `.leaflet-tile-pane`**, not different
+  tile sources. USGS serves only three basemaps and only USGSTopo has contours,
+  so "minimal" is achieved by desaturating and fading it. Filtering the tile
+  pane specifically (not the container) keeps markers and scale bar at full
+  contrast.
 - **Basemap is USGS The National Map**, public domain, no key. Tiles are
   runtime-cached CacheFirst in `vite.config.js`, which is what makes the map
   work in the field after you've viewed an area once. NGS queries are
