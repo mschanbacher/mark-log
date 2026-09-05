@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import * as db from "./db.js";
-import { fetchMarksInBbox, bboxAreaSqMi } from "./ngs.js";
+import { fetchMarksInBbox, bboxAreaSqMi, accuracyRadiusM,
+  conditionClass, recoveryYear } from "./ngs.js";
 import { distanceM, fmtDist } from "./geo.js";
 
 /* USGS The National Map. Public domain, no key, and it looks like
@@ -35,8 +36,37 @@ const BASEMAPS = {
 
 const ATTRIB = "USGS The National Map";
 
-const MARK_LIMIT = 800;   // circles we're willing to draw at once
+const MARK_LIMIT = 800;   // glyphs we're willing to draw at once
 const MARK_ZOOM = 12;     // below this, reference marks stay hidden
+const HALO_ZOOM = 15;     // uncertainty circles only make sense up close
+const HALO_MIN_M = 25;    // below this the circle is smaller than the dot
+
+const BROWN = "#8A5A2B";
+const PURPLE = "#6E4A8E";
+const PAPER = "#FBFAF7";
+
+/* Shape carries what kind of control it is, fill carries how much
+   NGS knows about it. Two channels is what a 14px glyph supports. */
+function glyphHtml(kind, state, mine) {
+  const stroke = mine ? PURPLE : BROWN;
+  const solid = mine || state === "good";
+  const fill = solid ? stroke : PAPER;
+  const dim = state === "gone" ? 0.5 : 1;
+  const body = kind === "H"
+    ? `<polygon points="8,2 14,13 2,13" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`
+    : `<circle cx="8" cy="8" r="5.5" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+  const slash = state === "gone"
+    ? `<line x1="2" y1="14" x2="14" y2="2" stroke="${stroke}" stroke-width="2"/>` : "";
+  return `<svg width="16" height="16" viewBox="0 0 16 16" opacity="${dim}">${body}${slash}</svg>`;
+}
+
+const glyphIcon = (kind, state, mine) =>
+  L.divIcon({
+    html: glyphHtml(kind, state, mine),
+    className: "markglyph",
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
 
 export default function MapView({ finds, pos, metric, onLog, flash, onMarksChanged }) {
   const holder = useRef(null);
@@ -80,16 +110,27 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
     setShown(inView.length);
 
     markLayer.current.clearLayers();
+    const showHalo = m.getZoom() >= HALO_ZOOM;
     for (const r of inView.slice(0, MARK_LIMIT)) {
       if (found.has((r.pid || "").toUpperCase())) continue; // drawn as a find
-      L.circleMarker([r.lat, r.lon], {
-        radius: 5,
-        color: "#8A5A2B",
-        weight: 2,
-        fillColor: "#FBFAF7",
-        fillOpacity: 0.95,
-      })
-        .on("click", () => setSel({ ...r, found: false }))
+      const state = conditionClass(r.lastCond, r.lastRecv);
+      const acc = r.accM != null ? r.accM : accuracyRadiusM(r.posSrce, r.accHz);
+
+      // The search area, drawn before the glyph so the glyph sits on top.
+      if (showHalo && acc != null && acc >= HALO_MIN_M) {
+        L.circle([r.lat, r.lon], {
+          radius: acc,
+          color: BROWN,
+          weight: 1,
+          opacity: 0.32,
+          dashArray: "3 5",
+          fill: false,
+          interactive: false,
+        }).addTo(markLayer.current);
+      }
+
+      L.marker([r.lat, r.lon], { icon: glyphIcon(r.kind, state, false) })
+        .on("click", () => setSel({ ...r, found: false, state, acc }))
         .addTo(markLayer.current);
     }
   }, [finds]);
@@ -141,13 +182,7 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
     findLayer.current.clearLayers();
     for (const f of finds) {
       if (!isFinite(f.lat) || !isFinite(f.lon)) continue;
-      L.circleMarker([f.lat, f.lon], {
-        radius: 7,
-        color: "#FBFAF7",
-        weight: 2,
-        fillColor: "#6E4A8E",
-        fillOpacity: 1,
-      })
+      L.marker([f.lat, f.lon], { icon: glyphIcon(f.kind, "good", true) })
         .on("click", () => setSel({ ...f, found: true }))
         .addTo(findLayer.current);
     }
@@ -182,8 +217,10 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
     map.current?.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
   };
 
-  /* ── pull this viewport from NGS ───────────────────────── */
-  const download = async () => {
+  /* ── refresh this viewport from NGS ────────────────────────
+     Fetch first, replace second. Clearing up front would mean a
+     dropped connection leaves the area empty. */
+  const refresh = async () => {
     const m = map.current;
     if (!m) return;
     const b = m.getBounds();
@@ -193,7 +230,7 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
     };
     const area = bboxAreaSqMi(box);
     if (area > 4000) {
-      setDl({ state: "error", msg: `That view covers about ${Math.round(area).toLocaleString()} sq mi. Zoom in to under 4,000 before downloading.` });
+      setDl({ state: "error", msg: `That view covers about ${Math.round(area).toLocaleString()} sq mi. Zoom in to under 4,000 first.` });
       return;
     }
     abort.current = new AbortController();
@@ -207,20 +244,17 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
         setDl({ state: "done", msg: "NGS has no marks in this view." });
         return;
       }
-      /* Don't re-add what's already stored for this area. */
-      const { rows: existing } = await db.marksInBox(
+      const removed = await db.deleteMarksInBox(
         box.minLat, box.maxLat, box.minLon, box.maxLon);
-      const have = new Set(existing.map((r) => (r.pid || "").toUpperCase()).filter(Boolean));
-      const fresh = marks.filter((m2) => !m2.pid || !have.has(m2.pid));
-
-      if (!fresh.length) {
-        setDl({ state: "done", msg: `All ${marks.length.toLocaleString()} already on file.` });
-        return;
-      }
-      await db.importMarks(fresh, { replace: false });
+      await db.importMarks(marks, { replace: false });
       await onMarksChanged();
       await drawMarks();
-      setDl({ state: "done", msg: `Added ${fresh.length.toLocaleString()} marks.` });
+      setDl({
+        state: "done",
+        msg: removed
+          ? `${marks.length.toLocaleString()} marks refreshed (${removed.toLocaleString()} replaced).`
+          : `${marks.length.toLocaleString()} marks added.`,
+      });
     } catch (e) {
       if (e.name === "AbortError") return;
       setDl({ state: "error", msg: e.message });
@@ -243,9 +277,9 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
           <button className="chip" onClick={fitFinds}>All finds</button>
         </div>
 
-        <button className="btn sm" onClick={download}
+        <button className="btn sm" onClick={refresh}
           disabled={dl?.state === "working"}>
-          {dl?.state === "working" ? dl.msg : "Download marks for this view"}
+          {dl?.state === "working" ? dl.msg : "Refresh marks in this view"}
         </button>
 
         {dl && dl.state !== "working" && (
@@ -253,6 +287,18 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
         )}
 
         <p className="maphint">{BASEMAPS[base].note}</p>
+
+        <div className="legend maplegend">
+          <span dangerouslySetInnerHTML={{ __html: glyphHtml("V", "good", false) }} /> reported good
+          <span dangerouslySetInnerHTML={{ __html: glyphHtml("V", "unknown", false) }} /> not reported lately
+          <span dangerouslySetInnerHTML={{ __html: glyphHtml("V", "gone", false) }} /> reported gone
+          <span dangerouslySetInnerHTML={{ __html: glyphHtml("V", "good", true) }} /> yours
+        </div>
+        <p className="maphint">
+          Circle = vertical control, triangle = horizontal. A dashed ring is how far
+          the published position may be off — hollow marks mean nobody has reported
+          in, not that the mark is missing.
+        </p>
 
         {zoomedOut ? (
           <p className="maphint">Zoom in to see marks on file.</p>
@@ -283,9 +329,21 @@ export default function MapView({ finds, pos, metric, onLog, flash, onMarksChang
               {sel.elev && <div className="mono coord">elev {sel.elev}</div>}
               {sel.setting && <p className="notes">{sel.setting}</p>}
               {sel.notes && <p className="notes">{sel.notes}</p>}
-              {sel.lastCond && (
+              {sel.lastCond ? (
                 <div className="mono coord">
-                  NGS last reported {sel.lastCond}{sel.lastRecv ? ` (${sel.lastRecv})` : ""}
+                  NGS last reported {sel.lastCond.toLowerCase()}
+                  {recoveryYear(sel.lastRecv) ? ` in ${recoveryYear(sel.lastRecv)}` : ""}
+                </div>
+              ) : sel.found ? null : (
+                <div className="mono coord">No recovery on record.</div>
+              )}
+              {!sel.found && (
+                <div className="mono coord">
+                  {sel.acc == null
+                    ? `Position source ${sel.posSrce || "unknown"} — accuracy not published.`
+                    : sel.acc >= HALO_MIN_M
+                      ? `Position ${(sel.posSrce || "").toLowerCase() || "scaled"} — search within about ${fmtDist(sel.acc, metric)}.`
+                      : `Position adjusted — good to about ${fmtDist(sel.acc, metric)}.`}
                 </div>
               )}
               <div className="card-acts">

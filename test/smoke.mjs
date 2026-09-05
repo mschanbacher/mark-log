@@ -32,3 +32,16 @@ await db.putPhoto({ id: "p1", findId: "a1", blob: new Blob(["x"]) });
 console.log("finds:", (await db.getFinds()).length, "photos:", (await db.getPhotos("a1")).length);
 await db.deleteFind("a1");
 console.log("after delete — finds:", (await db.getFinds()).length, "photos:", (await db.getPhotos("a1")).length);
+
+// ── deleteMarksInBox must spare edge-cell neighbours ────────
+await db.clearMarks();
+await db.importMarks([
+  { pid: "IN1", lat: 38.9500, lon: -95.2500 },   // inside
+  { pid: "IN2", lat: 38.9505, lon: -95.2495 },   // inside
+  { pid: "OUT", lat: 38.9800, lon: -95.2500 },   // same 0.1° cell, outside box
+]);
+const removed = await db.deleteMarksInBox(38.949, 38.951, -95.251, -95.249);
+const left = await db.marksCount();
+console.log(`${removed === 2 && left === 1 ? "PASS" : "FAIL"} deleteMarksInBox removed ${removed}, spared ${left} edge-cell neighbour`);
+const meta = await db.getMarkMeta();
+console.log(`${meta.count === 1 ? "PASS" : "FAIL"} meta count follows deletion (${meta.count})`);

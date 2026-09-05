@@ -64,4 +64,31 @@ try {
 const a = bboxAreaSqMi({ minLat: 38.5, maxLat: 39.5, minLon: -95.5, maxLon: -94.5 });
 ok(a > 3000 && a < 4200, `degree-square area ≈ ${Math.round(a)} sq mi`);
 
+
+
+// ── accuracy radius ─────────────────────────────────────────
+const { accuracyRadiusM, conditionClass, recoveryYear } =
+  await import("../src/ngs.js");
+
+ok(accuracyRadiusM("SCALED", "") === 180, "scaled positions get the published 180 m");
+ok(accuracyRadiusM("SCALED FROM TOPO", "5") === 180, "scaled wins over any N_ACC_HZ");
+ok(accuracyRadiusM("HD_HELD2", "") === 3, "differentially corrected handheld = 3 m");
+ok(accuracyRadiusM("HD_HELD1", "") === 10, "autonomous handheld = 10 m");
+ok(accuracyRadiusM("ADJUSTED", "90") === 0.9, "adjusted reads N_ACC_HZ as centimetres");
+ok(accuracyRadiusM("ADJUSTED", "") === 1, "adjusted with no figure falls back to 1 m");
+ok(accuracyRadiusM("ADJUSTED", "999999") === 1, "absurd N_ACC_HZ is rejected, not drawn");
+ok(accuracyRadiusM("", "") === null, "unknown source returns null, never a fake radius");
+ok(accuracyRadiusM("NO CHECK", "") === null, "NO CHECK is treated as unknown");
+
+// ── condition classes ───────────────────────────────────────
+const now = new Date(2026, 0, 1);
+ok(conditionClass("GOOD", "20200612", now) === "good", "recent good report");
+ok(conditionClass("GOOD", "19780612", now) === "unknown", "a 1978 report is not current evidence");
+ok(conditionClass("DESTROYED", "19900101", now) === "gone", "destroyed reads as gone");
+ok(conditionClass("MARK NOT FOUND", "20150101", now) === "gone", "not found reads as gone");
+ok(conditionClass("", "", now) === "unknown", "no report at all is unknown");
+ok(conditionClass("POOR", "20240101", now) === "unknown", "poor is not promoted to good");
+ok(recoveryYear("20120415") === 2012, "recovery year parses from YYYYMMDD");
+ok(recoveryYear("") === null, "blank recovery date yields null");
+
 process.exit(fail ? 1 : 0);

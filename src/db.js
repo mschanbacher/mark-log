@@ -135,6 +135,49 @@ export async function getMarkMeta() {
   return (await wrap(s.get("markfile"))) || null;
 }
 
+/* Deletes only the marks that truly fall inside the box. Cells on
+   the edge hold marks outside it — pulled during some earlier
+   viewport — and those have to survive. */
+export async function deleteMarksInBox(minLat, maxLat, minLon, maxLon) {
+  const database = await openDb();
+  const y0 = Math.floor(minLat * CELL), y1 = Math.floor(maxLat * CELL);
+  const x0 = Math.floor(minLon * CELL), x1 = Math.floor(maxLon * CELL);
+  const cells = [];
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++) cells.push(`${y}|${x}`);
+  if (cells.length > 4000) return 0;
+
+  let removed = 0;
+  await new Promise((res, rej) => {
+    const t = database.transaction("marks", "readwrite");
+    const ix = t.objectStore("marks").index("cell");
+    let i = 0;
+    const step = () => {
+      if (i >= cells.length) return;
+      const req = ix.openCursor(IDBKeyRange.only(cells[i++]));
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (cur) {
+          const v = cur.value;
+          if (v.lat >= minLat && v.lat <= maxLat &&
+              v.lon >= minLon && v.lon <= maxLon) { cur.delete(); removed++; }
+          cur.continue();
+        } else step();
+      };
+      req.onerror = () => step();
+    };
+    step();
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+
+  const count = await marksCount();
+  const s = await tx("meta", "readwrite");
+  const prev = await wrap(s.get("markfile"));
+  await wrap(s.put({ k: "markfile", count, at: prev?.at || new Date().toISOString() }));
+  return removed;
+}
+
 /* Pulls every mark in the cells covering a bounding box. Caller
    still does the true circular distance filter. */
 export async function marksInBox(minLat, maxLat, minLon, maxLon) {

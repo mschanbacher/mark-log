@@ -198,3 +198,9 @@ section{display:flex;flex-direction:column;gap:14px}
   line-height:1.5;padding:1px 5px;border-radius:0}
 .leaflet-control-scale-line:not(:first-child){border-top:1px solid var(--rule);
   border-bottom:none;margin-top:-1px}
+
+/* ── map symbology ───────────────────────────────────────── */
+.markglyph{background:none;border:none}
+.markglyph svg{display:block;filter:drop-shadow(0 0 1.5px rgba(251,250,247,.9))}
+.maplegend{justify-content:flex-start;gap:6px 14px;align-items:center}
+.maplegend span{display:inline-flex}
